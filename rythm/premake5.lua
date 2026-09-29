@@ -20,10 +20,17 @@ project "Rythm"
 
     includedirs
     {
+        "vendor/sdl/include"
+    }
+
+    libdirs
+    {
+        "vendor/sdl/build"
     }
 
     links
     {
+        "SDL3"
     }
 
     filter "system:windows"
