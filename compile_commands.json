@@ -1,0 +1,29 @@
+[
+  {
+    "file": "main.cpp",
+    "arguments": [
+      "/usr/bin/g++",
+      "-MD",
+      "-MP",
+      "-DVK_NO_PROTOTYPES",
+      "-DRM_DEBUG",
+      "-I../../vendor/sdl/include",
+      "-I../../vendor/glm",
+      "-I../../vendor/vma/include",
+      "-I../../vendor/volk",
+      "-I../../vendor/vulkan-headers/include",
+      "-I../../vendor/tinyobj",
+      "-m64",
+      "-g",
+      "-std=c++23",
+      "-o",
+      "../../bin-int/Debug-linux-x86_64/Rythm/main.o",
+      "-MF",
+      "../../bin-int/Debug-linux-x86_64/Rythm/main.d",
+      "-c",
+      "main.cpp"
+    ],
+    "directory": "/home/mythidas/Source/Rythm/rythm/src",
+    "output": "../../bin-int/Debug-linux-x86_64/Rythm/main.o"
+  }
+]

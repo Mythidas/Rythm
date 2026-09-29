@@ -16,21 +16,32 @@ project "Rythm"
     {
         "src/**.h",
         "src/**.cpp",
+        "../vendor/volk/volk.c"
     }
 
     includedirs
     {
-        "vendor/sdl/include"
+        "../vendor/sdl/include",
+        "../vendor/glm",
+        "../vendor/vma/include",
+        "../vendor/volk",
+        "../vendor/vulkan-headers/include",
+        "../vendor/tinyobj"
     }
 
     libdirs
     {
-        "vendor/sdl/build"
+        "../vendor/sdl/build"
     }
 
     links
     {
         "SDL3"
+    }
+
+    defines
+    {
+        "VK_NO_PROTOTYPES"
     }
 
     filter "system:windows"

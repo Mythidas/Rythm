@@ -1,6 +1,12 @@
 #define SDL_MAIN_USE_CALLBACKS 1  /* use the callbacks instead of main() */
+#define VMA_IMPLEMENTATION
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <volk.h>
+#include <vk_mem_alloc.h>
+#include <glm/vec3.hpp>
+#include <tiny_obj_loader.h>
 
 /* We will use this renderer to draw into this window every frame. */
 static SDL_Window *window = NULL;
@@ -21,6 +27,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         return SDL_APP_FAILURE;
     }
     SDL_SetRenderLogicalPresentation(renderer, 640, 480, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+
+    volkInitialize();
+    const glm::vec3 test = {0,0,0};
 
     return SDL_APP_CONTINUE;  /* carry on with the program! */
 }

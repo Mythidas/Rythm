@@ -1,4 +1,6 @@
+# Generated Files
 Makefile
 /bin
 /bin-int
 /.vs
+compile_commands.json

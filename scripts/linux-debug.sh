@@ -1,3 +1,3 @@
 ./vendor/premake/premake5 gmake
-make config=debug
+bear -- make config=debug verbose=1
 ./bin/Debug-linux-x86_64/Rythm/Rythm

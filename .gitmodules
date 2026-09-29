@@ -1,3 +1,18 @@
 [submodule "vendor/sdl"]
 	path = vendor/sdl
 	url = git@github.com:libsdl-org/SDL.git
+[submodule "vendor/volk"]
+	path = vendor/volk
+	url = git@github.com:zeux/volk.git
+[submodule "vendor/vulkan-headers"]
+	path = vendor/vulkan-headers
+	url = git@github.com:KhronosGroup/Vulkan-Headers.git
+[submodule "vendor/vma"]
+	path = vendor/vma
+	url = git@github.com:GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "vendor/glm"]
+	path = vendor/glm
+	url = git@github.com:g-truc/glm.git
+[submodule "vendor/tinyobj"]
+	path = vendor/tinyobj
+	url = git@github.com:tinyobjloader/tinyobjloader.git
