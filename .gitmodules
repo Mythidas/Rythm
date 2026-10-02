@@ -16,3 +16,6 @@
 [submodule "vendor/tinyobj"]
 	path = vendor/tinyobj
 	url = git@github.com:tinyobjloader/tinyobjloader.git
+[submodule "vendor/ktx"]
+	path = vendor/ktx
+	url = git@github.com:KhronosGroup/KTX-Software.git

@@ -12,6 +12,8 @@ project "Rythm"
     pchsource "src/rmpch.cpp"
     enablepch("Off")
 
+    local vulkanSDK = os.getenv("VULKAN_SDK")
+
     files
     {
         "src/**.h",
@@ -26,22 +28,30 @@ project "Rythm"
         "../vendor/vma/include",
         "../vendor/volk",
         "../vendor/vulkan-headers/include",
-        "../vendor/tinyobj"
+        "../vendor/tinyobj",
+        "../vendor/ktx/lib/include",
+        "../vendor/ktx/external/dfdutils",
+        vulkanSDK .. "/include"
     }
 
     libdirs
     {
-        "../vendor/sdl/build"
+        "../vendor/sdl/build",
+        "../vendor/ktx/lib/build",
+        vulkanSDK .. "/lib"
     }
 
     links
     {
-        "SDL3"
+        "SDL3",
+        "ktx",
+        "slang-compiler"
     }
 
     defines
     {
-        "VK_NO_PROTOTYPES"
+        "VK_NO_PROTOTYPES",
+        "KHRONOS_STATIC"
     }
 
     filter "system:windows"
