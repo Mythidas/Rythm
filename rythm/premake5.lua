@@ -23,6 +23,7 @@ project "Rythm"
 
     includedirs
     {
+        "src",
         "../vendor/sdl/include",
         "../vendor/glm",
         "../vendor/vma/include",
@@ -31,21 +32,24 @@ project "Rythm"
         "../vendor/tinyobj",
         "../vendor/ktx/lib/include",
         "../vendor/ktx/external/dfdutils",
-        vulkanSDK .. "/include"
+        vulkanSDK .. "/include",
+        "../vendor/spdlog/include"
     }
 
     libdirs
     {
         "../vendor/sdl/build",
         "../vendor/ktx/lib/build",
-        vulkanSDK .. "/lib"
+        vulkanSDK .. "/lib",
+        "../vendor/spdlog/build",
     }
 
     links
     {
         "SDL3",
         "ktx",
-        "slang-compiler"
+        "slang-compiler",
+        "spdlog"
     }
 
     defines

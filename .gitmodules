@@ -19,3 +19,6 @@
 [submodule "vendor/ktx"]
 	path = vendor/ktx
 	url = git@github.com:KhronosGroup/KTX-Software.git
+[submodule "vendor/spdlog"]
+	path = vendor/spdlog
+	url = git@github.com:gabime/spdlog.git
