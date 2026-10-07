@@ -4,9 +4,10 @@
 #include "vk_render_device.h"
 
 #include <volk.h>
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
-namespace rm {
+namespace rm::vk {
     VKRenderContext::VKRenderContext() {
         volkInitialize();
         VkApplicationInfo appInfo{
@@ -24,9 +25,14 @@ namespace rm {
             .enabledExtensionCount = instanceExtensionCount,
             .ppEnabledExtensionNames = instanceExtensions,
         };
-        VKHelpers::Check(vkCreateInstance(&instanceCI, nullptr, &instance));
+        VK_CHECK(vkCreateInstance(&instanceCI, nullptr, &instance));
         volkLoadInstance(instance);
 
+        bool sdlInit = SDL_Init(SDL_INIT_VIDEO);
+        assert(sdlInit);
+
+        bool sdlVulkan = SDL_Vulkan_LoadLibrary(NULL);
+        assert(sdlVulkan);
 
         Logger::Info("Created VKRenderContext");
     }

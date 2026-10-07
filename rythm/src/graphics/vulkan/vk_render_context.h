@@ -4,7 +4,7 @@
 
 #include <vulkan/vulkan_core.h>
 
-namespace rm {
+namespace rm::vk {
     class VKRenderContext : public RenderContext {
     public:
         VKRenderContext();

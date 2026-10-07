@@ -4,8 +4,8 @@
 
 namespace rm {
     Scope<RenderContext> RenderContext::Create(const RenderContextSpec &spec) {
-        if (spec.backend == VULKAN) {
-            return CreateScope<VKRenderContext>();
+        if (spec.backend == RenderBackend::VULKAN) {
+            return CreateScope<vk::VKRenderContext>();
         }
 
         return nullptr;

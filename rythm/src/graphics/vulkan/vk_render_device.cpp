@@ -1,33 +1,44 @@
-#include "vulkan/vulkan_core.h"
-#define VMA_IMPLEMENTATION
-
 #include "rmpch.h"
 #include "vk_render_device.h"
 #include "vk_render_context.h"
+#include "vk_image.h"
+#include "vk_render_buffer.h"
+#include "vk_swapchain.h"
+#include "vk_render_sync.h"
+#include "vk_command_buffer.h"
+#include "vk_shader.h"
+#include "vk_resource_layout.h"
+#include "vk_resource_set.h"
+#include "vk_graphics_pipeline.h"
 #include "vk_helpers.h"
+
+#include "graphics/shader_compiler.h"
 
 #include <vector>
 #include <SDL3/SDL_vulkan.h>
 #include <volk.h>
 
-namespace rm {
+#define VMA_IMPLEMENTATION
+#include <vma/vk_mem_alloc.h>
+
+namespace rm::vk {
     VKRenderDevice::VKRenderDevice(VKRenderContext& context, const RenderDeviceSpec& spec): context(context), spec(spec) {
         uint32_t deviceCount{ 0 };
-        VKHelpers::Check(vkEnumeratePhysicalDevices(context.GetInstance(), &deviceCount, nullptr));
+        VK_CHECK(vkEnumeratePhysicalDevices(context.GetInstance(), &deviceCount, nullptr));
 
         std::vector<VkPhysicalDevice> devices(deviceCount);
-        VKHelpers::Check(vkEnumeratePhysicalDevices(context.GetInstance(), &deviceCount, devices.data()));
+        VK_CHECK(vkEnumeratePhysicalDevices(context.GetInstance(), &deviceCount, devices.data()));
 
         uint32_t deviceIndex{ 0 };
         if (spec.deviceIndex > 1) {
             deviceIndex = spec.deviceIndex;
-            VKHelpers::Check(deviceIndex > deviceCount);
+            VK_CHECK(deviceIndex > deviceCount);
         }
 
         physicalDevice = devices[deviceIndex];
 
         vkGetPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties);
-        RM_LOG_INFO("Selected Device: {}", physicalDeviceProperties.properties.deviceName);
+        RM_LOG_INFO("Selected GPU: {}", physicalDeviceProperties.properties.deviceName);
 
         // Queue
         uint32_t queueFamilyCount{ 0 };
@@ -35,14 +46,13 @@ namespace rm {
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
 
-        uint32_t queueFamily{ 0 };
         for (size_t i = 0; i < queueFamilies.size(); i++) {
             if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 queueFamily = i;
                 break;
             }
         }
-        VKHelpers::Check(SDL_Vulkan_GetPresentationSupport(context.GetInstance(), physicalDevice, queueFamily));
+        VK_CHECK(SDL_Vulkan_GetPresentationSupport(context.GetInstance(), physicalDevice, queueFamily));
 
         // Logical
         const float qfPriorities{ 1.0f };
@@ -84,7 +94,7 @@ namespace rm {
             .pEnabledFeatures = &enabledVk10Features
         };
 
-        VKHelpers::Check(vkCreateDevice(physicalDevice, &deviceCI, nullptr, &device));
+        VK_CHECK(vkCreateDevice(physicalDevice, &deviceCI, nullptr, &device));
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
 
         // VMA
@@ -101,9 +111,7 @@ namespace rm {
             .instance = context.GetInstance()
         };
 
-        VKHelpers::Check(vmaCreateAllocator(&allocatorCI, &allocator));
-
-        Logger::Info("Created VKDevice");
+        VK_CHECK(vmaCreateAllocator(&allocatorCI, &allocator));
     }
 
     VKRenderDevice::~VKRenderDevice() {
@@ -112,9 +120,42 @@ namespace rm {
 
     Scope<Swapchain> VKRenderDevice::CreateSwapchain() {
         VkSurfaceKHR surface{ VK_NULL_HANDLE };
-        VKHelpers::Check(SDL_Vulkan_CreateSurface(&spec.window.GetNative(), context.GetInstance(), nullptr, &surface));
+        VK_CHECK(SDL_Vulkan_CreateSurface(&spec.window.GetNative(), context.GetInstance(), nullptr, &surface));
 
         SwapchainSpec swapchainSpec{ .width = spec.window.GetWidth(), .height = spec.window.GetHeight() };
-        return CreateScope<VKSwapchain>(*this, surface, swapchainSpec);
+        return CreateScope<VKSwapchain>(*this, context, surface, swapchainSpec);
+    }
+
+    Scope<rm::Image> VKRenderDevice::CreateImage(const ImageSpec& spec) {
+        return CreateScope<VKImage>(*this, spec);
+    }
+
+    Scope<RenderBuffer> VKRenderDevice::CreateBuffer(const RenderBufferSpec& spec) {
+        return CreateScope<VKRenderBuffer>(*this, spec);
+    }
+
+    Scope<RenderSync> VKRenderDevice::CreateSync() {
+        return CreateScope<VKRenderSync>(*this);
+    }
+
+    Scope<CommandBuffer> VKRenderDevice::CreateCommandBuffer(const CommandBufferSpec &spec) {
+        return CreateScope<VKCommandBuffer>(*this, spec);
+    }
+
+    Scope<Shader> VKRenderDevice::CreateShader(const ShaderSpec &spec) {
+        ShaderBytecode bytecode = this->spec.shaderCompiler.Compile(spec.path);
+        return CreateScope<VKShader>(*this, bytecode, spec);
+    }
+
+    Scope<ResourceLayout> VKRenderDevice::CreateResourceLayout(const ResourceLayoutSpec &spec) {
+        return CreateScope<VKResourceLayout>(*this, spec);
+    }
+
+    Scope<ResourceSet> VKRenderDevice::CreateResourceSet() {
+        return CreateScope<VKResourceSet>(*this);
+    }
+
+    Scope<GraphicsPipeline> VKRenderDevice::CreateGraphicsPipeline(const GraphicsPipelineSpec &spec) {
+        return CreateScope<VKGraphicsPipeline>(*this, spec);
     }
 }

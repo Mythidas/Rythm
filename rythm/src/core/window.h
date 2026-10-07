@@ -20,17 +20,20 @@ namespace rm {
 
         static Scope<Window> Create(const WindowSpec& spec);
 
-        void Update() const;
+        void Update();
 
         SDL_Window& GetNative() const { return *native; }
-        unsigned int GetWidth() const { return spec.width; }
-        unsigned int GetHeight() const { return spec.height; }
+        unsigned int GetWidth() const { return width; }
+        unsigned int GetHeight() const { return height; }
+        const char* GetTitle() const { return title; }
 
         Signal<> S_WindowClose;
         Signal<unsigned int, unsigned int> S_WindowResize;
 
     private:
-        WindowSpec spec;
         SDL_Window* native{ nullptr };
+
+        const char* title;
+        unsigned int width, height;
     };
 }

@@ -6,7 +6,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
-#define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
