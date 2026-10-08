@@ -22,7 +22,7 @@ namespace rm {
 
         void Update();
 
-        SDL_Window& GetNative() const { return *native; }
+        SDL_Window* GetNative() const { return native; }
         unsigned int GetWidth() const { return width; }
         unsigned int GetHeight() const { return height; }
         const char* GetTitle() const { return title; }

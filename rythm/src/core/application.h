@@ -1,10 +1,13 @@
 #pragma once
 
 #include "defines.h"
-#include "window.h"
-#include "graphics/renderer.h"
 
 namespace rm {
+    namespace gfx {
+        class Renderer;
+    }
+    class Window;
+
     struct ApplicationSpec {
 
     };
@@ -23,7 +26,7 @@ namespace rm {
     private:
         ApplicationSpec spec;
         Scope<Window> window;
-        Scope<Renderer> renderer;
+        Scope<gfx::Renderer> renderer;
 
         bool running;
     };

@@ -1,8 +1,14 @@
 #include "core/application.h"
+#include "core/logger.h"
 
 int main() {
-    rm::Application application({});
-    application.Run();
+    try {
+        rm::Application application({});
+        application.Run();
+    } catch (const std::exception& e) {
+        RM_LOG_ERROR("Fatal Error: {}", e.what());
+        return EXIT_FAILURE;
+    }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
