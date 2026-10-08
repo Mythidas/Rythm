@@ -5,20 +5,20 @@
 
 namespace rm {
     Window::Window(const WindowSpec& spec): title(spec.title), width(spec.width), height(spec.height) {
+        if (!SDL_Init(SDL_INIT_VIDEO)) {
+            throw std::runtime_error(SDL_GetError());
+        }
+
         native = SDL_CreateWindow(title, width, height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
         assert(native);
 
-        SDL_ShowWindow(native);
+        SDL_GetWindowSize(native, (int*)&width, (int*)&height);
         RM_LOG_INFO("Created Window: {} ({}x{})", title, width, height);
     }
 
     Window::~Window() {
 	    SDL_DestroyWindow(native);
         RM_LOG_INFO("Destroyed Window: {}", title);
-    }
-
-    Scope<Window> Window::Create(const WindowSpec &spec) {
-        return CreateScope<Window>(spec);
     }
 
     void Window::Update() {

@@ -18,8 +18,6 @@ namespace rm {
         Window(const Window&) = delete;
         Window& operator=(const Window&) = delete;
 
-        static Scope<Window> Create(const WindowSpec& spec);
-
         void Update();
 
         SDL_Window* GetNative() const { return native; }

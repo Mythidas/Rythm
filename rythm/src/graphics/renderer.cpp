@@ -1,5 +1,6 @@
 #include "rmpch.h"
 #include "renderer.h"
+#include "color.h"
 #include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_core.h"
 #include "vulkan_helpers.h"
@@ -11,7 +12,10 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <SDL3/SDL_vulkan.h>
 #define VMA_IMPLEMENTATION
 #include <vma/vk_mem_alloc.h>
-#include <glm/glm.hpp>
+#include <slang/slang.h>
+#include <slang/slang-com-ptr.h>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <vector>
 
@@ -28,8 +32,24 @@ namespace rm::gfx {
         float texture;
     };
 
+    struct CameraUniform {
+        glm::mat4 projection;
+        glm::mat4 view;
+    };
+
+    struct BufferInfo {
+        vk::Buffer buffer;
+        vk::DeviceAddress bufferAddress;
+        VmaAllocation allocation;
+        VmaAllocationInfo allocationInfo;
+    };
+
     struct RenderData {
         vk::Instance instance;
+        uint32_t queueFamilyIndex{ 0 };
+        bool swapchainUpdate{ false };
+        uint32_t indexCount{ 0 };
+        uint32_t vertexCount{ 0 };
 
         // Device
         vk::Device device;
@@ -37,7 +57,6 @@ namespace rm::gfx {
         vk::PhysicalDevice physicalDevice;
         vk::PhysicalDeviceProperties2 deviceProperties;
         VmaAllocator allocator;
-        uint32_t queueFamilyIndex{ 0 };
 
         // Swapchain
         vk::SurfaceKHR surface;
@@ -49,17 +68,32 @@ namespace rm::gfx {
         vk::Image swapchainDepthImage;
         vk::ImageView swapchainDepthImageView;
         VmaAllocation swapchainDepthImageAlloc;
+        std::vector<vk::Semaphore> renderSemaphores;
 
         // Command Pool
         vk::CommandPool commandPool;
         std::vector<vk::CommandBuffer> commandBuffers;
 
         // Buffers
-        vk::Buffer vBuffer;
-        vk::Buffer iBuffer;
-        VmaAllocation vBuffAlloc;
-        VmaAllocation iBuffAlloc;
-        VmaAllocationInfo vBuffAllocInfo;
+        BufferInfo indexBuffer;
+        std::array<BufferInfo, MAX_FRAMES_IN_FLIGHT> vertexBuffers;
+        std::array<Vertex, MAX_VERTICES> vertexBuffer;
+
+        // Shader
+        Slang::ComPtr<slang::IGlobalSession> slangGS;
+        vk::ShaderModule shader;
+
+        // Pipeline
+        vk::Pipeline pipeline;
+        vk::PipelineLayout pipelineLayout;
+
+        // Camera
+        CameraUniform cameraUniform;
+        std::array<BufferInfo, MAX_FRAMES_IN_FLIGHT> cameraBuffers;
+
+        // Sync
+        std::array<vk::Fence, MAX_FRAMES_IN_FLIGHT> fences;
+        std::array<vk::Semaphore, MAX_FRAMES_IN_FLIGHT> acquireSemaphores;
     } renderData;
 
     Renderer::Renderer(Window& window): window(window) {
@@ -67,13 +101,33 @@ namespace rm::gfx {
         CreateDevice();
         CreateSwapchain();
         CreateBuffers();
+        CreateShaders();
+        CreatePipeline();
+        CreateCameraBuffer();
+        CreateSyncObjects();
+
+        Logger::Info("Created Renderer");
     }
 
     Renderer::~Renderer() {
         renderData.device.waitIdle();
 
-        vmaDestroyBuffer(renderData.allocator, renderData.vBuffer, renderData.vBuffAlloc);
-        vmaDestroyBuffer(renderData.allocator, renderData.iBuffer, renderData.iBuffAlloc);
+        for (auto i = 0; i < renderData.renderSemaphores.size(); i++) {
+            renderData.device.destroySemaphore(renderData.renderSemaphores[i], nullptr);
+        }
+
+        for (auto i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            renderData.device.destroyFence(renderData.fences[i], nullptr);
+            renderData.device.destroySemaphore(renderData.acquireSemaphores[i], nullptr);
+            vmaDestroyBuffer(renderData.allocator, static_cast<VkBuffer>(renderData.cameraBuffers[i].buffer), renderData.cameraBuffers[i].allocation);
+            vmaDestroyBuffer(renderData.allocator, renderData.vertexBuffers[i].buffer, renderData.vertexBuffers[i].allocation);
+        }
+
+        renderData.device.destroyPipelineLayout(renderData.pipelineLayout);
+        renderData.device.destroyPipeline(renderData.pipeline);
+        renderData.device.destroyShaderModule(renderData.shader, nullptr);
+
+        vmaDestroyBuffer(renderData.allocator, renderData.indexBuffer.buffer, renderData.indexBuffer.allocation);
 
         renderData.device.destroyCommandPool(renderData.commandPool, nullptr);
 
@@ -83,10 +137,184 @@ namespace rm::gfx {
             renderData.device.destroyImageView(imageView, nullptr);
         }
 
-        vmaDestroyAllocator(renderData.allocator);
         renderData.device.destroySwapchainKHR(renderData.swapchain, nullptr);
+        renderData.instance.destroySurfaceKHR(renderData.surface, nullptr);
+        vmaDestroyAllocator(renderData.allocator);
         renderData.device.destroy();
         renderData.instance.destroy();
+
+        Logger::Info("Destroyed Renderer");
+    }
+
+    void Renderer::BeginFrame() {
+        renderData.cameraUniform.projection = glm::perspective(glm::radians(45.0f), (float)window.GetWidth() / (float)window.GetHeight(), 0.1f, 32.0f);
+        renderData.cameraUniform.view = glm::translate(glm::mat4(1.0f), { 0.0, 0.0, -6.0f });
+
+        RM_VK_CHECK(renderData.device.waitForFences(1, &renderData.fences[currentFrame], true, UINT64_MAX));
+        RM_VK_CHECK(renderData.device.resetFences(1, &renderData.fences[currentFrame]));
+        RM_VK_CHECK(renderData.device.acquireNextImageKHR(renderData.swapchain, UINT64_MAX, renderData.acquireSemaphores[currentFrame], VK_NULL_HANDLE, &currentImage));
+
+        memcpy(renderData.cameraBuffers[currentFrame].allocationInfo.pMappedData, &renderData.cameraUniform, sizeof(CameraUniform));
+    }
+
+    void Renderer::EndFrame() {
+        FlushFrame();
+    }
+
+    void Renderer::DrawQuad(glm::vec3 position, glm::vec3 rotation, glm::vec3 scale, rm::Color color) {
+        if (renderData.indexCount + 6 > MAX_INDICES) {
+            Logger::Error("Quad render buffer is full!");
+            return;
+        }
+
+        glm::mat4 transform(1.0f);
+
+        transform = glm::translate(transform, position);
+        transform = glm::rotate(transform, glm::radians(rotation.x), { 1, 0, 0 });
+        transform = glm::rotate(transform, glm::radians(rotation.y), { 0, 1, 0 });
+        transform = glm::rotate(transform, glm::radians(rotation.z), { 0, 0, 1 });
+        transform = glm::scale(transform, scale);
+
+        constexpr glm::vec4 quadPositions[4] = {
+            { -0.5f, -0.5f, 0.0f, 1.0f },
+            {  0.5f, -0.5f, 0.0f, 1.0f },
+            {  0.5f,  0.5f, 0.0f, 1.0f },
+            { -0.5f,  0.5f, 0.0f, 1.0f }
+        };
+
+        constexpr glm::vec2 texCoords[4] = {
+            { 0.0f, 0.0f },
+            { 1.0f, 0.0f },
+            { 1.0f, 1.0f },
+            { 0.0f, 1.0f }
+        };
+
+        for (uint32_t i = 0; i < 4; i++) {
+            glm::vec4 transformed = transform * quadPositions[i];
+
+            renderData.vertexBuffer[renderData.vertexCount + i] = {
+                glm::vec3(transformed),
+                { color.r, color.g, color.b, color.a },
+                texCoords[i],
+                0.0f
+            };
+        }
+
+        renderData.vertexCount += 4;
+        renderData.indexCount += 6;
+    }
+
+    void Renderer::FlushFrame() {
+        vk::DeviceSize vertexSize(renderData.vertexCount * sizeof(Vertex));
+        memcpy(renderData.vertexBuffers[currentFrame].allocationInfo.pMappedData, renderData.vertexBuffer.data(), vertexSize);
+        RM_VK_CHECK(vmaFlushAllocation(renderData.allocator, renderData.vertexBuffers[currentFrame].allocation, 0, vertexSize));
+
+        vk::CommandBuffer cb = renderData.commandBuffers[currentFrame];
+        cb.reset();
+
+        vk::CommandBufferBeginInfo cbBI(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        RM_VK_CHECK(cb.begin(&cbBI));
+
+        std::array<vk::ImageMemoryBarrier2, 2> outputBarriers{
+            vk::ImageMemoryBarrier2()
+                .setSrcStageMask(vk::PipelineStageFlagBits2::eColorAttachmentOutput)
+                .setSrcAccessMask(vk::AccessFlagBits2::eNone)
+                .setDstStageMask(vk::PipelineStageFlagBits2::eColorAttachmentOutput)
+                .setDstAccessMask(vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite)
+                .setOldLayout(vk::ImageLayout::eUndefined)
+                .setNewLayout(vk::ImageLayout::eAttachmentOptimal)
+                .setImage(renderData.swapchainImages[currentImage])
+                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, {}, 1, {}, 1)),
+            vk::ImageMemoryBarrier2()
+                .setSrcStageMask(vk::PipelineStageFlagBits2::eLateFragmentTests)
+                .setSrcAccessMask(vk::AccessFlagBits2::eDepthStencilAttachmentWrite)
+                .setDstStageMask(vk::PipelineStageFlagBits2::eEarlyFragmentTests)
+                .setDstAccessMask(vk::AccessFlagBits2::eDepthStencilAttachmentWrite)
+                .setOldLayout(vk::ImageLayout::eUndefined)
+                .setNewLayout(vk::ImageLayout::eAttachmentOptimal)
+                .setImage(renderData.swapchainDepthImage)
+                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil, {}, 1, {}, 1))
+        };
+        vk::DependencyInfo barrierDependencyInfo({}, {}, {}, {}, {}, 2, outputBarriers.data());
+        cb.pipelineBarrier2(&barrierDependencyInfo);
+
+        vk::RenderingAttachmentInfo colorAttachmentInfo = vk::RenderingAttachmentInfo()
+            .setImageView(renderData.swapchainImageViews[currentImage])
+            .setImageLayout(vk::ImageLayout::eAttachmentOptimal)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eStore)
+            .setClearValue(vk::ClearValue(vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f)));
+        vk::RenderingAttachmentInfo depthAttachmentInfo = vk::RenderingAttachmentInfo()
+            .setImageView(renderData.swapchainDepthImageView)
+            .setImageLayout(vk::ImageLayout::eAttachmentOptimal)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eDontCare)
+            .setClearValue(vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0)));
+
+        vk::Extent2D extent(window.GetWidth(), window.GetHeight());
+        vk::RenderingInfo renderingInfo = vk::RenderingInfo()
+            .setRenderArea(vk::Rect2D({}, extent))
+            .setLayerCount(1)
+            .setColorAttachmentCount(1)
+            .setPColorAttachments(&colorAttachmentInfo)
+            .setPDepthAttachment(&depthAttachmentInfo);
+
+        cb.beginRendering(&renderingInfo);
+        cb.bindPipeline(vk::PipelineBindPoint::eGraphics, renderData.pipeline);
+
+        vk::Viewport viewport({}, {}, (float)window.GetWidth(), (float)window.GetHeight(), 0.0f, 1.0f);
+        vk::Rect2D scissor({}, extent);
+
+        cb.setViewport(0, 1, &viewport);
+        cb.setScissor(0, 1, &scissor);
+
+        vk::DeviceSize vOffset{ 0 };
+        vk::DeviceSize iOffset{ 0 };
+        cb.bindVertexBuffers(0, 1, &renderData.vertexBuffers[currentFrame].buffer, &vOffset);
+        cb.bindIndexBuffer(renderData.indexBuffer.buffer, iOffset, vk::IndexType::eUint16);
+        cb.pushConstants(renderData.pipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(vk::DeviceAddress), &renderData.cameraBuffers[currentFrame].bufferAddress);
+        cb.drawIndexed(renderData.indexCount, 1, 0, 0, 0);
+        cb.endRendering();
+
+        vk::ImageMemoryBarrier2 barrierPresent = vk::ImageMemoryBarrier2()
+            .setSrcStageMask(vk::PipelineStageFlagBits2::eColorAttachmentOutput)
+            .setSrcAccessMask(vk::AccessFlagBits2::eColorAttachmentWrite)
+            .setDstStageMask(vk::PipelineStageFlagBits2::eColorAttachmentOutput)
+            .setDstAccessMask(vk::AccessFlagBits2::eNone)
+            .setOldLayout(vk::ImageLayout::eAttachmentOptimal)
+            .setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+            .setImage(renderData.swapchainImages[currentImage])
+            .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, {}, 1, {}, 1));
+        vk::DependencyInfo barrierPresentDepdencyInfo({}, {}, {}, {}, {}, 1, &barrierPresent);
+
+        renderData.vertexCount = 0;
+        renderData.indexCount = 0;
+
+        cb.pipelineBarrier2(&barrierPresentDepdencyInfo);
+        cb.end();
+
+        vk::SemaphoreSubmitInfo waitSemaphoreSI(renderData.acquireSemaphores[currentFrame], {}, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
+        vk::CommandBufferSubmitInfo commandBufferSI(cb);
+        vk::SemaphoreSubmitInfo signalSemaphoreSI(renderData.renderSemaphores[currentImage], {}, vk::PipelineStageFlagBits2::eColorAttachmentOutput);
+        vk::SubmitInfo2 submitInfo = vk::SubmitInfo2()
+            .setWaitSemaphoreInfoCount(1)
+            .setPWaitSemaphoreInfos(&waitSemaphoreSI)
+            .setCommandBufferInfoCount(1)
+            .setPCommandBufferInfos(&commandBufferSI)
+            .setSignalSemaphoreInfoCount(1)
+            .setPSignalSemaphoreInfos(&signalSemaphoreSI);
+
+        RM_VK_CHECK(renderData.deviceQueue.submit2(1, &submitInfo, renderData.fences[currentFrame]));
+        currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+        vk::PresentInfoKHR presentInfo(1, &renderData.renderSemaphores[currentImage], 1, &renderData.swapchain, &currentImage);
+        vk::Result swapchainResult = renderData.deviceQueue.presentKHR(presentInfo);
+
+        if (swapchainResult == vk::Result::eErrorOutOfDateKHR) {
+            renderData.swapchainUpdate = true;
+        } else {
+            RM_VK_CHECK((swapchainResult));
+        }
     }
 
     void Renderer::CreateInstance() {
@@ -306,7 +534,6 @@ namespace rm::gfx {
 
         // Vertex
 
-        VkBuffer vBuffer;
         vk::BufferCreateInfo vbuffCI = vk::BufferCreateInfo()
             .setSize(MAX_VERTICES * sizeof(Vertex))
             .setUsage(vk::BufferUsageFlagBits::eVertexBuffer)
@@ -317,14 +544,19 @@ namespace rm::gfx {
             .usage = VMA_MEMORY_USAGE_AUTO
         };
 
-        RM_VK_CHECK(vmaCreateBuffer(
+        for (auto i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            VkBuffer vBuffer;
+            RM_VK_CHECK(vmaCreateBuffer(
                     renderData.allocator,
                     reinterpret_cast<const VkBufferCreateInfo*>(&vbuffCI),
                     &vAllocCI,
                     &vBuffer,
-                    &renderData.vBuffAlloc,
-                    &renderData.vBuffAllocInfo
+                    &renderData.vertexBuffers[i].allocation,
+                    &renderData.vertexBuffers[i].allocationInfo
                     ));
+
+            renderData.vertexBuffers[i].buffer = vBuffer;
+        }
 
         // Index
 
@@ -380,10 +612,10 @@ namespace rm::gfx {
                     reinterpret_cast<const VkBufferCreateInfo*>(&indexCI),
                     &indexAllocCI,
                     &indexBuffer,
-                    &renderData.iBuffAlloc,
+                    &renderData.indexBuffer.allocation,
                     nullptr
                     ));
-        renderData.iBuffer = indexBuffer;
+        renderData.indexBuffer.buffer = indexBuffer;
 
         vk::CommandBufferAllocateInfo cbOneTimeAI = vk::CommandBufferAllocateInfo()
             .setCommandPool(renderData.commandPool)
@@ -425,5 +657,130 @@ namespace rm::gfx {
         renderData.device.freeCommandBuffers(renderData.commandPool, 1, &cbOneTime);
 
         vmaDestroyBuffer(renderData.allocator, iStagingBuffer, stagingAlloc);
+    }
+
+    void Renderer::CreateShaders() {
+        slang::createGlobalSession(renderData.slangGS.writeRef());
+
+        auto slangTargets{
+            std::to_array<slang::TargetDesc>({ { .format = SLANG_SPIRV, .profile = renderData.slangGS->findProfile("spirv_1_4") } })
+        };
+        auto slangOptions{
+            std::to_array<slang::CompilerOptionEntry>({ { slang::CompilerOptionName::EmitSpirvDirectly, { slang::CompilerOptionValueKind::Int, 1 } } })
+        };
+
+        slang::SessionDesc slangSDesc{
+            .targets = slangTargets.data(),
+            .targetCount = SlangInt(slangTargets.size()),
+            .defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR,
+            .compilerOptionEntries = slangOptions.data(),
+            .compilerOptionEntryCount = uint32_t(slangOptions.size())
+        };
+
+        Slang::ComPtr<slang::ISession> slangSession;
+        renderData.slangGS->createSession(slangSDesc, slangSession.writeRef());
+
+        Slang::ComPtr<slang::IModule> slangModule{ slangSession->loadModuleFromSource("triangle", "assets/shader.slang", nullptr, nullptr) };
+        Slang::ComPtr<ISlangBlob> spirv;
+        slangModule->getTargetCode(0, spirv.writeRef());
+
+        vk::ShaderModuleCreateInfo shaderModuleCI = vk::ShaderModuleCreateInfo()
+            .setCodeSize(spirv->getBufferSize())
+            .setPCode((uint32_t*)spirv->getBufferPointer());
+
+        RM_VK_CHECK(renderData.device.createShaderModule(&shaderModuleCI, nullptr, &renderData.shader));
+    }
+
+    void Renderer::CreatePipeline() {
+        vk::PushConstantRange constantRange(vk::ShaderStageFlagBits::eVertex, 0, sizeof(vk::DeviceAddress));
+        vk::PipelineLayoutCreateInfo pipelineLayoutCI({}, {}, {}, 1, &constantRange);
+        RM_VK_CHECK(renderData.device.createPipelineLayout(&pipelineLayoutCI, nullptr, &renderData.pipelineLayout));
+
+        std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages{
+            vk::PipelineShaderStageCreateInfo().setStage(vk::ShaderStageFlagBits::eVertex).setModule(renderData.shader).setPName("main"),
+            vk::PipelineShaderStageCreateInfo().setStage(vk::ShaderStageFlagBits::eFragment).setModule(renderData.shader).setPName("main"),
+        };
+
+        vk::VertexInputBindingDescription vertexBinding(0, sizeof(Vertex), vk::VertexInputRate::eVertex);
+        std::array<vk::VertexInputAttributeDescription, 4> vertexAttributes{
+            vk::VertexInputAttributeDescription().setLocation(0).setBinding(0).setFormat(vk::Format::eR32G32B32Sfloat),
+            vk::VertexInputAttributeDescription().setLocation(1).setBinding(0).setFormat(vk::Format::eR32G32B32A32Sfloat).setOffset(offsetof(Vertex, color)),
+            vk::VertexInputAttributeDescription().setLocation(2).setBinding(0).setFormat(vk::Format::eR32G32Sfloat).setOffset(offsetof(Vertex, uv)),
+            vk::VertexInputAttributeDescription().setLocation(3).setBinding(0).setFormat(vk::Format::eR32Sfloat).setOffset(offsetof(Vertex, texture))
+        };
+
+        vk::PipelineVertexInputStateCreateInfo vertexInputState = vk::PipelineVertexInputStateCreateInfo()
+            .setVertexBindingDescriptionCount(1)
+            .setPVertexBindingDescriptions(&vertexBinding)
+            .setVertexAttributeDescriptionCount(static_cast<uint32_t>(vertexAttributes.size()))
+            .setPVertexAttributeDescriptions(vertexAttributes.data());
+
+        vk::PipelineInputAssemblyStateCreateInfo inputAssemblyStateCI({}, vk::PrimitiveTopology::eTriangleList);
+        std::array<vk::DynamicState, 2> dynamicStates{ vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+        vk::PipelineDynamicStateCreateInfo dynamicStateCI({}, 2, dynamicStates.data());
+        vk::PipelineViewportStateCreateInfo viewportStateCI({}, 1, nullptr, 1, nullptr);
+        vk::PipelineRasterizationStateCreateInfo rastStateCI = vk::PipelineRasterizationStateCreateInfo().setLineWidth(1.0f);
+        vk::PipelineMultisampleStateCreateInfo multisampleStateCI({}, vk::SampleCountFlagBits::e1);
+        vk::PipelineDepthStencilStateCreateInfo depthStencilStateCI({}, vk::True, vk::True, vk::CompareOp::eLessOrEqual);
+        vk::PipelineColorBlendAttachmentState blendAttachment({ .colorWriteMask = 0xF });
+        vk::PipelineColorBlendStateCreateInfo colorBlendStateCI({ .attachmentCount = 1, .pAttachments = (VkPipelineColorBlendAttachmentState*)&blendAttachment });
+        vk::PipelineRenderingCreateInfo renderingCI = vk::PipelineRenderingCreateInfo()
+            .setColorAttachmentCount(1)
+            .setPColorAttachmentFormats(&renderData.swapchainImageFormat)
+            .setDepthAttachmentFormat(renderData.swapchainDepthFormat);
+
+        vk::GraphicsPipelineCreateInfo pipelineCI = vk::GraphicsPipelineCreateInfo()
+            .setPNext(&renderingCI)
+            .setStageCount(2)
+            .setPStages(shaderStages.data())
+            .setPVertexInputState(&vertexInputState)
+            .setPInputAssemblyState(&inputAssemblyStateCI)
+            .setPViewportState(&viewportStateCI)
+            .setPRasterizationState(&rastStateCI)
+            .setPMultisampleState(&multisampleStateCI)
+            .setPDepthStencilState(&depthStencilStateCI)
+            .setPColorBlendState(&colorBlendStateCI)
+            .setPDynamicState(&dynamicStateCI)
+            .setLayout(renderData.pipelineLayout);
+
+        RM_VK_CHECK(renderData.device.createGraphicsPipelines(VK_NULL_HANDLE, 1, &pipelineCI, nullptr, &renderData.pipeline));
+    }
+
+    void Renderer::CreateCameraBuffer() {
+        for (auto i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            vk::BufferCreateInfo bufferCI = vk::BufferCreateInfo()
+                .setSize(sizeof(CameraUniform))
+                .setUsage(vk::BufferUsageFlagBits::eShaderDeviceAddress);
+            VmaAllocationCreateInfo bufferAllocCI{
+                .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO
+            };
+
+            RM_VK_CHECK(vmaCreateBuffer(
+                        renderData.allocator,
+                        reinterpret_cast<const VkBufferCreateInfo*>(&bufferCI),
+                        &bufferAllocCI,
+                        reinterpret_cast<VkBuffer*>(&renderData.cameraBuffers[i].buffer),
+                        &renderData.cameraBuffers[i].allocation,
+                        &renderData.cameraBuffers[i].allocationInfo
+                        ));
+
+            renderData.cameraBuffers[i].bufferAddress = renderData.device.getBufferAddress({ renderData.cameraBuffers[i].buffer });
+        }
+    }
+
+    void Renderer::CreateSyncObjects() {
+        vk::SemaphoreCreateInfo semaphoreCI;
+        vk::FenceCreateInfo fenceCI(vk::FenceCreateFlagBits::eSignaled);
+
+        renderData.renderSemaphores.resize(renderData.swapchainImages.size());
+        for (auto& semaphore : renderData.renderSemaphores) {
+            RM_VK_CHECK(renderData.device.createSemaphore(&semaphoreCI, nullptr, &semaphore));
+        }
+
+        for (auto i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            RM_VK_CHECK(renderData.device.createFence(&fenceCI, nullptr, &renderData.fences[i]));
+            RM_VK_CHECK(renderData.device.createSemaphore(&semaphoreCI, nullptr, &renderData.acquireSemaphores[i]));
+        }
     }
 }

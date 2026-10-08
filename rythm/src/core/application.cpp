@@ -2,20 +2,15 @@
 #include "application.h"
 #include "window.h"
 #include "graphics/renderer.h"
+#include "graphics/color.h"
 
-#include <SDL3/SDL.h>
-#include <stdexcept>
 
 namespace rm {
     Application::Application(const ApplicationSpec& spec): spec(spec) {
         Logger::Init();
         Logger::Info("Initialized Logger");
 
-        if (!SDL_Init(SDL_INIT_VIDEO)) {
-            throw std::runtime_error(SDL_GetError());
-        }
-
-        window = Window::Create({ .title = "Rythm", .width = 1280, .height = 720 });
+        window = CreateScope<Window>(WindowSpec({ .title = "Rythm", .width = 1280, .height = 720 }));
 
         window->S_WindowClose.Register([this](){
             running = false;
@@ -27,8 +22,9 @@ namespace rm {
 
     Application::~Application() {
         window.reset();
-        SDL_QuitSubSystem(SDL_INIT_VIDEO);
-	    SDL_Quit();
+        renderer.reset();
+
+        Logger::Info("Application Destroyed");
     }
 
     void Application::Run() {
@@ -37,8 +33,10 @@ namespace rm {
 
         while (running) {
             window->Update();
-            if (running) {
-            }
+
+            renderer->BeginFrame();
+            renderer->DrawQuad({ 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f, 1.0f, 1.0f });
+            renderer->EndFrame();
         }
     }
 }
