@@ -27,7 +27,9 @@ namespace rm::gfx {
 
         void CreateInstance();
         void CreateDevice();
+        void CreateSurface();
         void CreateSwapchain();
+        void DestroySwapchain();
         void CreateBuffers();
         void CreateShaders();
         void CreatePipeline();

@@ -1,8 +1,6 @@
 #include "rmpch.h"
 #include "renderer.h"
 #include "color.h"
-#include "vulkan/vulkan.hpp"
-#include "vulkan/vulkan_core.h"
 #include "vulkan_helpers.h"
 #include "core/window.h"
 
@@ -69,6 +67,7 @@ namespace rm::gfx {
         vk::ImageView swapchainDepthImageView;
         VmaAllocation swapchainDepthImageAlloc;
         std::vector<vk::Semaphore> renderSemaphores;
+        vk::Extent3D swapchainExtent;
 
         // Command Pool
         vk::CommandPool commandPool;
@@ -99,12 +98,18 @@ namespace rm::gfx {
     Renderer::Renderer(Window& window): window(window) {
         CreateInstance();
         CreateDevice();
+        CreateSurface();
         CreateSwapchain();
         CreateBuffers();
         CreateShaders();
         CreatePipeline();
         CreateCameraBuffer();
         CreateSyncObjects();
+
+        window.S_WindowResize.Register([this](uint32_t width, uint32_t height){
+            renderData.swapchainUpdate = true;
+            return false;
+        });
 
         Logger::Info("Created Renderer");
     }
@@ -147,7 +152,7 @@ namespace rm::gfx {
     }
 
     void Renderer::BeginFrame() {
-        renderData.cameraUniform.projection = glm::perspective(glm::radians(45.0f), (float)window.GetWidth() / (float)window.GetHeight(), 0.1f, 32.0f);
+        renderData.cameraUniform.projection = glm::perspective(glm::radians(45.0f), (float)renderData.swapchainExtent.width / (float)renderData.swapchainExtent.height, 0.1f, 32.0f);
         renderData.cameraUniform.view = glm::translate(glm::mat4(1.0f), { 0.0, 0.0, -6.0f });
 
         RM_VK_CHECK(renderData.device.waitForFences(1, &renderData.fences[currentFrame], true, UINT64_MAX));
@@ -251,7 +256,7 @@ namespace rm::gfx {
             .setStoreOp(vk::AttachmentStoreOp::eDontCare)
             .setClearValue(vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0)));
 
-        vk::Extent2D extent(window.GetWidth(), window.GetHeight());
+        vk::Extent2D extent(renderData.swapchainExtent.width, renderData.swapchainExtent.height);
         vk::RenderingInfo renderingInfo = vk::RenderingInfo()
             .setRenderArea(vk::Rect2D({}, extent))
             .setLayerCount(1)
@@ -262,7 +267,7 @@ namespace rm::gfx {
         cb.beginRendering(&renderingInfo);
         cb.bindPipeline(vk::PipelineBindPoint::eGraphics, renderData.pipeline);
 
-        vk::Viewport viewport({}, {}, (float)window.GetWidth(), (float)window.GetHeight(), 0.0f, 1.0f);
+        vk::Viewport viewport({}, {}, (float)renderData.swapchainExtent.width, (float)renderData.swapchainExtent.height, 0.0f, 1.0f);
         vk::Rect2D scissor({}, extent);
 
         cb.setViewport(0, 1, &viewport);
@@ -310,8 +315,10 @@ namespace rm::gfx {
         vk::PresentInfoKHR presentInfo(1, &renderData.renderSemaphores[currentImage], 1, &renderData.swapchain, &currentImage);
         vk::Result swapchainResult = renderData.deviceQueue.presentKHR(presentInfo);
 
-        if (swapchainResult == vk::Result::eErrorOutOfDateKHR) {
-            renderData.swapchainUpdate = true;
+        if (swapchainResult == vk::Result::eErrorOutOfDateKHR || renderData.swapchainUpdate) {
+            DestroySwapchain();
+            CreateSwapchain();
+            renderData.swapchainUpdate = false;
         } else {
             RM_VK_CHECK((swapchainResult));
         }
@@ -416,13 +423,15 @@ namespace rm::gfx {
         RM_VK_CHECK(vmaCreateAllocator(&allocatorCI, &renderData.allocator));
     }
 
-    void Renderer::CreateSwapchain() {
+    void Renderer::CreateSurface() {
         VkSurfaceKHR sdlSurface{ VK_NULL_HANDLE };
         bool sdlVulkanSurface = SDL_Vulkan_CreateSurface(window.GetNative(), renderData.instance, nullptr, &sdlSurface);
         RM_ASSERT(sdlSurface != VK_NULL_HANDLE, "Failed to get Vulkan Surface from SDL");
 
         renderData.surface = sdlSurface;
+    }
 
+    void Renderer::CreateSwapchain() {
         vk::SurfaceCapabilitiesKHR surfaceCapabilities{};
         RM_VK_CHECK(renderData.physicalDevice.getSurfaceCapabilitiesKHR(renderData.surface, &surfaceCapabilities));
 
@@ -433,6 +442,7 @@ namespace rm::gfx {
                 .height = window.GetHeight(),
             };
         }
+        renderData.swapchainExtent = vk::Extent3D(extent.width, extent.height, 1);
 
         vk::SwapchainCreateInfoKHR swapchainCI = vk::SwapchainCreateInfoKHR()
             .setSurface(renderData.surface)
@@ -471,6 +481,12 @@ namespace rm::gfx {
             RM_VK_CHECK(renderData.device.createImageView(&viewCI, nullptr, &renderData.swapchainImageViews[i]));
         }
 
+        vk::SemaphoreCreateInfo semaphoreCI;
+        renderData.renderSemaphores.resize(renderData.swapchainImages.size());
+        for (auto& semaphore : renderData.renderSemaphores) {
+            RM_VK_CHECK(renderData.device.createSemaphore(&semaphoreCI, nullptr, &semaphore));
+        }
+
         // Depth Attachment
         renderData.swapchainDepthFormat = vk::Format::eUndefined;
         std::array<vk::Format, 2> depthFormats{ vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint };
@@ -485,11 +501,10 @@ namespace rm::gfx {
 
         if (renderData.swapchainDepthFormat == vk::Format::eUndefined) throw std::runtime_error("Failed to get depth image format");
 
-        vk::Extent3D diExtent(window.GetWidth(), window.GetHeight(), 1);
         vk::ImageCreateInfo depthImageCI = vk::ImageCreateInfo()
             .setImageType(vk::ImageType::e2D)
             .setFormat(renderData.swapchainDepthFormat)
-            .setExtent(diExtent)
+            .setExtent(renderData.swapchainExtent)
             .setMipLevels(1)
             .setArrayLayers(1)
             .setSamples(vk::SampleCountFlagBits::e1)
@@ -520,6 +535,22 @@ namespace rm::gfx {
             .setSubresourceRange(vk::ImageSubresourceRange().setAspectMask(vk::ImageAspectFlagBits::eDepth).setLevelCount(1).setLayerCount(1));
 
         RM_VK_CHECK(renderData.device.createImageView(&depthViewCI, nullptr, &renderData.swapchainDepthImageView));
+    }
+
+    void Renderer::DestroySwapchain() {
+        renderData.device.waitIdle();
+
+        for (auto i = 0; i < renderData.swapchainImageViews.size(); i++) {
+            renderData.device.destroyImageView(renderData.swapchainImageViews[i]);
+        }
+
+        for (auto& semaphore : renderData.renderSemaphores) {
+            renderData.device.destroySemaphore(semaphore);
+        }
+
+        renderData.device.destroySwapchainKHR(renderData.swapchain);
+        vmaDestroyImage(renderData.allocator, renderData.swapchainDepthImage, renderData.swapchainDepthImageAlloc);
+        renderData.device.destroyImageView(renderData.swapchainDepthImageView);
     }
 
     void Renderer::CreateBuffers() {
@@ -772,11 +803,6 @@ namespace rm::gfx {
     void Renderer::CreateSyncObjects() {
         vk::SemaphoreCreateInfo semaphoreCI;
         vk::FenceCreateInfo fenceCI(vk::FenceCreateFlagBits::eSignaled);
-
-        renderData.renderSemaphores.resize(renderData.swapchainImages.size());
-        for (auto& semaphore : renderData.renderSemaphores) {
-            RM_VK_CHECK(renderData.device.createSemaphore(&semaphoreCI, nullptr, &semaphore));
-        }
 
         for (auto i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             RM_VK_CHECK(renderData.device.createFence(&fenceCI, nullptr, &renderData.fences[i]));
